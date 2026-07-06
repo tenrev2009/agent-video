@@ -13,7 +13,12 @@ et en mode **Multi-Shot** — afin de recréer une scène équivalente, avec des
    - mouvements détaillés des acteurs (chronologie, gestes, direction, vitesse, expressions) ;
    - environnement (décor, lumière, heure, météo/saison, accessoires) ;
    - caméra (cadrage, angle, mouvement).
-4. **Génère les prompts Kling en anglais** :
+4. **Construit une fiche de cohérence des personnages** (si la vidéo a plus d'une
+   scène) : un aperçu de toute la vidéo est analysé pour identifier les personnages
+   récurrents et figer, pour chacun, une description anglaise fixe — réutilisée mot
+   pour mot dans le prompt de chaque scène où ils apparaissent, afin qu'ils restent
+   visuellement identiques d'un plan Kling à l'autre.
+5. **Génère les prompts Kling en anglais**, pour chaque scène de 15 s de la vidéo :
    - un prompt single-shot optimisé (structure : sujet + mouvement + environnement +
      lumière + caméra + style) ;
    - un negative prompt ;
@@ -21,8 +26,11 @@ et en mode **Multi-Shot** — afin de recréer une scène équivalente, avec des
      décor, même lumière — seuls le cadrage et l'action changent) ;
    - 3–4 **variations** : mêmes acteurs et mêmes mouvements, mais nouvel
      environnement, autre saison, autre heure ou autre style visuel.
-5. **Produit un rapport** : `kling_prompts.md` (lisible, prompts prêts à coller
+6. **Produit un rapport** : `kling_prompts.md` (lisible, prompts prêts à coller
    dans Kling) et `kling_prompts.json` (données structurées).
+
+Une vidéo de 2 minutes donne ainsi ~8 scènes de 15 s, chacune avec son propre jeu de
+prompts Kling — et les mêmes personnages décrits à l'identique dans chacune.
 
 ## Installation
 
@@ -54,6 +62,8 @@ python video_scene_agent.py ma_video.mp4 --max-scenes 2
 python video_scene_agent.py ma_video.mp4 \
     --scene-duration 15 \        # durée d'une scène (s)
     --frames-per-scene 4 \       # images clés analysées par scène
+    --bible-frames 12 \          # nb max de scènes échantillonnées pour la fiche personnages
+    --no-character-bible \       # désactive la cohérence des personnages entre scènes
     --output mon_rapport/        # dossier de sortie
 ```
 
@@ -79,6 +89,25 @@ dollies alongside her at eye level. Cinematic, 35mm film, shallow depth of field
 ### 🌍 Variations
 **Version hiver** — même chorégraphie, place enneigée au crépuscule…
 ````
+
+## Cohérence des personnages entre scènes
+
+Pour une vidéo de plusieurs scènes, l'agent construit d'abord une **fiche
+personnages** (un appel API supplémentaire, sur une image par scène) qui identifie
+chaque personnage récurrent et fige sa description en anglais :
+
+```markdown
+## 🧑 Personnages identifiés (cohérence inter-scènes)
+
+- **homme au manteau bleu marine** (`char_1`) — A tall man in his late 30s with
+  short dark hair and stubble, wearing a navy wool peacoat, dark jeans and brown
+  leather boots.
+```
+
+Cette description est ensuite réutilisée mot pour mot dans le prompt Kling de
+chaque scène où ce personnage apparaît (single-shot, Multi-Shot et variations),
+pour qu'il reste visuellement le même d'un plan généré à l'autre. Désactivable
+avec `--no-character-bible` si vous préférez une analyse indépendante par scène.
 
 ## Utilisation comme sous-agent Claude Code
 

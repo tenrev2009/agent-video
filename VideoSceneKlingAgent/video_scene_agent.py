@@ -167,6 +167,52 @@ SCENE_SCHEMA = {
     },
 }
 
+CHARACTER_BIBLE_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["characters"],
+    "properties": {
+        "characters": {
+            "type": "array",
+            "description": (
+                "Every distinct character (person, animal, vehicle) that recurs in more than "
+                "one sampled frame across the video. Empty if nothing recurs."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["id", "label", "canonical_description"],
+                "properties": {
+                    "id": {"type": "string", "description": "Short stable id, e.g. char_1."},
+                    "label": {
+                        "type": "string",
+                        "description": "Short human label in French for the report, e.g. 'homme au manteau bleu marine'.",
+                    },
+                    "canonical_description": {
+                        "type": "string",
+                        "description": (
+                            "Fixed English description (build, hair, distinctive features, primary "
+                            "wardrobe) to reuse VERBATIM in every scene prompt where this character "
+                            "appears, so Kling generations stay visually consistent across shots."
+                        ),
+                    },
+                },
+            },
+        }
+    },
+}
+
+CHARACTER_BIBLE_SYSTEM_PROMPT = """\
+You are given keyframes sampled across an entire video, one representative frame per scene, \
+in chronological order. Identify every DISTINCT character (person, animal, vehicle) that \
+recurs in more than one scene. For each one, write a fixed canonical English description \
+(build, hair, distinctive features, primary wardrobe) that will be pasted verbatim into every \
+future scene prompt, so the character looks the same across independently generated Kling AI \
+video clips. Ignore characters that appear in only one scene as pure background extras. If \
+wardrobe changes between scenes, describe the most representative outfit and briefly note the \
+change. If no recurring character is visible, return an empty list.
+"""
+
 SYSTEM_PROMPT = """\
 You are an expert film analyst and AI-video prompt engineer specialized in Kling AI \
 (text-to-video and Multi-Shot mode).
@@ -278,7 +324,79 @@ def encode_image(path: Path) -> str:
     return base64.standard_b64encode(path.read_bytes()).decode("utf-8")
 
 
-def analyze_scene(client: anthropic.Anthropic, model: str, scene: Scene) -> dict | None:
+def select_bible_frames(scenes: list[Scene], max_frames: int) -> list[tuple[Scene, float, Path]]:
+    """Choisit une image représentative (celle du milieu) par scène, en échantillonnant
+    les scènes de façon régulière s'il y en a plus que max_frames."""
+    if len(scenes) <= max_frames:
+        chosen = scenes
+    else:
+        step = len(scenes) / max_frames
+        indices = sorted({int(i * step) for i in range(max_frames)})
+        chosen = [scenes[i] for i in indices]
+    picks = []
+    for scene in chosen:
+        ts, frame_path = scene.frames[len(scene.frames) // 2]
+        picks.append((scene, ts, frame_path))
+    return picks
+
+
+def build_character_bible(client: anthropic.Anthropic, model: str, scenes: list[Scene],
+                          max_frames: int) -> tuple[list[dict], str | None]:
+    """Analyse un échantillon d'images sur toute la vidéo pour figer une description
+    anglaise fixe de chaque personnage récurrent, réutilisable telle quelle dans chaque
+    prompt de scène afin de garder les mêmes personnages d'un clip Kling à l'autre."""
+    picks = select_bible_frames(scenes, max_frames)
+    content = [{
+        "type": "text",
+        "text": (
+            f"{len(picks)} keyframes sampled across the whole video, one per scene, "
+            "in chronological order."
+        ),
+    }]
+    for scene, ts, frame_path in picks:
+        content.append({"type": "text", "text": f"Scene {scene.index} (t = {ts:.1f}s):"})
+        content.append({
+            "type": "image",
+            "source": {"type": "base64", "media_type": "image/jpeg", "data": encode_image(frame_path)},
+        })
+
+    with client.messages.stream(
+        model=model,
+        max_tokens=4096,
+        thinking={"type": "adaptive"},
+        system=[{"type": "text", "text": CHARACTER_BIBLE_SYSTEM_PROMPT}],
+        output_config={"format": {"type": "json_schema", "schema": CHARACTER_BIBLE_SCHEMA}},
+        messages=[{"role": "user", "content": content}],
+    ) as stream:
+        response = stream.get_final_message()
+
+    if response.stop_reason == "refusal":
+        print("   ⚠ Fiche personnages refusée par les classificateurs de sécurité — "
+              "poursuite sans cohérence inter-scènes.")
+        return [], None
+
+    text = "".join(block.text for block in response.content if block.type == "text")
+    characters = json.loads(text).get("characters", [])
+    if not characters:
+        return [], None
+
+    lines = [
+        "CHARACTER CONSISTENCY — the characters below recur across this video. Whenever one "
+        "of them appears in the current scene, reuse their canonical_description VERBATIM "
+        "(word for word) in the actor description, in kling_prompt, kling_negative_prompt, "
+        "every multishot prompt, and every variation prompt where they appear — this keeps "
+        "the character visually identical across independently generated Kling clips. If a "
+        "person in this scene is not listed below, describe them yourself, consistently "
+        "within this scene.",
+        "",
+    ]
+    for c in characters:
+        lines.append(f"- {c['id']} ({c['label']}): {c['canonical_description']}")
+    return characters, "\n".join(lines)
+
+
+def analyze_scene(client: anthropic.Anthropic, model: str, scene: Scene,
+                  character_bible_text: str | None = None) -> dict | None:
     content = [{
         "type": "text",
         "text": (
@@ -297,11 +415,16 @@ def analyze_scene(client: anthropic.Anthropic, model: str, scene: Scene) -> dict
             },
         })
 
+    system_blocks = [{"type": "text", "text": SYSTEM_PROMPT}]
+    if character_bible_text:
+        system_blocks.append({"type": "text", "text": character_bible_text})
+    system_blocks[-1]["cache_control"] = {"type": "ephemeral"}
+
     with client.messages.stream(
         model=model,
         max_tokens=16000,
         thinking={"type": "adaptive"},
-        system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
+        system=system_blocks,
         output_config={"format": {"type": "json_schema", "schema": SCENE_SCHEMA}},
         messages=[{"role": "user", "content": content}],
     ) as stream:
@@ -321,7 +444,8 @@ def analyze_scene(client: anthropic.Anthropic, model: str, scene: Scene) -> dict
 # Rapport
 # ---------------------------------------------------------------------------
 
-def render_markdown(video_name: str, results: list[tuple[Scene, dict]]) -> str:
+def render_markdown(video_name: str, results: list[tuple[Scene, dict]],
+                    characters: list[dict] | None = None) -> str:
     lines = [
         f"# Analyse vidéo & prompts Kling — {video_name}",
         "",
@@ -329,6 +453,11 @@ def render_markdown(video_name: str, results: list[tuple[Scene, dict]]) -> str:
         "Tous les prompts sont en anglais, prêts à coller dans Kling AI.",
         "",
     ]
+    if characters:
+        lines += ["## 🧑 Personnages identifiés (cohérence inter-scènes)", ""]
+        for c in characters:
+            lines.append(f"- **{c['label']}** (`{c['id']}`) — {c['canonical_description']}")
+        lines += ["", "---", ""]
     for scene, data in results:
         lines += [
             f"## Scène {scene.index} — {scene.start:.0f}s → {scene.end:.0f}s",
@@ -408,6 +537,10 @@ def main() -> None:
                         help="Nombre d'images clés analysées par scène (défaut : 4)")
     parser.add_argument("--max-scenes", type=int, default=None,
                         help="Limiter le nombre de scènes analysées (utile pour tester)")
+    parser.add_argument("--no-character-bible", action="store_true",
+                        help="Désactive la fiche de cohérence des personnages entre scènes")
+    parser.add_argument("--bible-frames", type=int, default=12,
+                        help="Nombre max de scènes échantillonnées pour la fiche personnages (défaut : 12)")
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help=f"Modèle Claude (défaut : {DEFAULT_MODEL})")
     parser.add_argument("--output", default="kling_report",
@@ -438,11 +571,22 @@ def main() -> None:
         scenes = split_scenes(video, workdir, args.scene_duration,
                               args.frames_per_scene, args.max_scenes)
 
+        characters: list[dict] = []
+        character_bible_text: str | None = None
+        if not args.no_character_bible and len(scenes) > 1:
+            print("→ Construction de la fiche de cohérence des personnages ...")
+            characters, character_bible_text = build_character_bible(
+                client, args.model, scenes, args.bible_frames)
+            if characters:
+                print(f"   ✓ {len(characters)} personnage(s) identifié(s) pour cohérence inter-scènes.")
+            else:
+                print("   (aucun personnage récurrent identifié — poursuite sans fiche.)")
+
         results: list[tuple[Scene, dict]] = []
         for scene in scenes:
             print(f"→ Analyse de la scène {scene.index}/{len(scenes)} avec {args.model} ...")
             try:
-                data = analyze_scene(client, args.model, scene)
+                data = analyze_scene(client, args.model, scene, character_bible_text)
             except anthropic.RateLimitError:
                 print(f"   ⚠ Scène {scene.index} : limite de débit atteinte, nouvelle tentative "
                       "gérée par le SDK a échoué — scène ignorée.")
@@ -460,12 +604,17 @@ def main() -> None:
     json_path = output_dir / "kling_prompts.json"
     md_path = output_dir / "kling_prompts.md"
     json_path.write_text(json.dumps(
-        [{"scene": s.index, "start": s.start, "end": s.end, **d} for s, d in results],
+        {
+            "characters": characters,
+            "scenes": [{"scene": s.index, "start": s.start, "end": s.end, **d} for s, d in results],
+        },
         ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_markdown(video_name, results), encoding="utf-8")
+    md_path.write_text(render_markdown(video_name, results, characters), encoding="utf-8")
 
     print()
     print(f"✅ Terminé : {len(results)} scène(s) analysée(s).")
+    if characters:
+        print(f"   Personnages cohérents entre scènes : {len(characters)}")
     print(f"   Rapport lisible : {md_path}")
     print(f"   Données JSON    : {json_path}")
 
