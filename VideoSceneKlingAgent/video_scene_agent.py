@@ -444,82 +444,92 @@ def analyze_scene(client: anthropic.Anthropic, model: str, scene: Scene,
 # Rapport
 # ---------------------------------------------------------------------------
 
-def render_markdown(video_name: str, results: list[tuple[Scene, dict]],
-                    characters: list[dict] | None = None) -> str:
+def render_scene_markdown(scene: Scene, data: dict) -> str:
+    """Rapport Markdown d'UNE scène — correspond à UN fichier = UNE génération Kling."""
+    lines = [
+        f"# Scène {scene.index} — {scene.start:.0f}s → {scene.end:.0f}s",
+        "",
+        f"**Résumé :** {data['scene_summary']}",
+        "",
+        "## Acteurs et mouvements",
+        "",
+    ]
+    for actor in data["actors"]:
+        lines += [f"- **{actor['description']}**", f"  - Mouvements : {actor['movements']}"]
+    env = data["environment"]
+    cam = data["camera"]
+    lines += [
+        "",
+        "## Environnement",
+        "",
+        f"- Décor : {env['setting']}",
+        f"- Lumière : {env['lighting']}",
+        f"- Moment : {env['time_of_day']} — {env['weather_or_season']}",
+        f"- Éléments clés : {', '.join(env['key_props']) or '—'}",
+        "",
+        "## Caméra",
+        "",
+        f"- Cadrage : {cam['shot_type']} | Angle : {cam['angle']} | Mouvement : {cam['movement']}",
+        "",
+        "## 🎬 Prompt Kling (single shot)",
+        "",
+        "```text",
+        data["kling_prompt"],
+        "```",
+        "",
+        "**Negative prompt :**",
+        "",
+        "```text",
+        data["kling_negative_prompt"],
+        "```",
+        "",
+        "## 🎞 Multi-Shot Kling",
+        "",
+    ]
+    for shot in data["multishot"]:
+        lines += [
+            f"**Shot {shot['shot_number']} (~{shot['duration_seconds']:.0f}s)**",
+            "",
+            "```text",
+            shot["prompt"],
+            "```",
+            "",
+        ]
+    lines += ["## 🌍 Variations (environnement / saison / style)", ""]
+    for var in data["variations"]:
+        lines += [
+            f"**{var['name']}** — {var['concept']}",
+            "",
+            "```text",
+            var["kling_prompt"],
+            "```",
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def render_index_markdown(video_name: str, results: list[tuple[Scene, dict]],
+                          characters: list[dict] | None, scene_filenames: dict[int, str]) -> str:
+    """Sommaire listant chaque fichier de scène généré (un fichier = une vidéo Kling)."""
     lines = [
         f"# Analyse vidéo & prompts Kling — {video_name}",
         "",
-        f"{len(results)} scène(s) de ~15 s analysée(s). "
-        "Tous les prompts sont en anglais, prêts à coller dans Kling AI.",
+        f"{len(results)} scène(s) de ~15 s analysée(s) — un fichier `.json` et `.md` par scène "
+        "(un fichier = une génération Kling). Tous les prompts sont en anglais.",
         "",
     ]
     if characters:
         lines += ["## 🧑 Personnages identifiés (cohérence inter-scènes)", ""]
         for c in characters:
             lines.append(f"- **{c['label']}** (`{c['id']}`) — {c['canonical_description']}")
-        lines += ["", "---", ""]
+        lines += ["", "Détails complets : `characters.json`", "", "---", ""]
+    lines += ["## Scènes", ""]
     for scene, data in results:
-        lines += [
-            f"## Scène {scene.index} — {scene.start:.0f}s → {scene.end:.0f}s",
-            "",
-            f"**Résumé :** {data['scene_summary']}",
-            "",
-            "### Acteurs et mouvements",
-            "",
-        ]
-        for actor in data["actors"]:
-            lines += [f"- **{actor['description']}**", f"  - Mouvements : {actor['movements']}"]
-        env = data["environment"]
-        cam = data["camera"]
-        lines += [
-            "",
-            "### Environnement",
-            "",
-            f"- Décor : {env['setting']}",
-            f"- Lumière : {env['lighting']}",
-            f"- Moment : {env['time_of_day']} — {env['weather_or_season']}",
-            f"- Éléments clés : {', '.join(env['key_props']) or '—'}",
-            "",
-            "### Caméra",
-            "",
-            f"- Cadrage : {cam['shot_type']} | Angle : {cam['angle']} | Mouvement : {cam['movement']}",
-            "",
-            "### 🎬 Prompt Kling (single shot)",
-            "",
-            "```text",
-            data["kling_prompt"],
-            "```",
-            "",
-            "**Negative prompt :**",
-            "",
-            "```text",
-            data["kling_negative_prompt"],
-            "```",
-            "",
-            "### 🎞 Multi-Shot Kling",
-            "",
-        ]
-        for shot in data["multishot"]:
-            lines += [
-                f"**Shot {shot['shot_number']} (~{shot['duration_seconds']:.0f}s)**",
-                "",
-                "```text",
-                shot["prompt"],
-                "```",
-                "",
-            ]
-        lines += ["### 🌍 Variations (environnement / saison / style)", ""]
-        for var in data["variations"]:
-            lines += [
-                f"**{var['name']}** — {var['concept']}",
-                "",
-                "```text",
-                var["kling_prompt"],
-                "```",
-                "",
-            ]
-        lines.append("---")
-        lines.append("")
+        fname = scene_filenames[scene.index]
+        lines.append(
+            f"- **[Scène {scene.index} — {scene.start:.0f}s → {scene.end:.0f}s]({fname}.md)** "
+            f"— {data['scene_summary']} _(`{fname}.json`)_"
+        )
     return "\n".join(lines)
 
 
@@ -601,22 +611,34 @@ def main() -> None:
     if not results:
         sys.exit("Aucune scène n'a pu être analysée.")
 
-    json_path = output_dir / "kling_prompts.json"
-    md_path = output_dir / "kling_prompts.md"
-    json_path.write_text(json.dumps(
-        {
-            "characters": characters,
-            "scenes": [{"scene": s.index, "start": s.start, "end": s.end, **d} for s, d in results],
-        },
-        ensure_ascii=False, indent=2), encoding="utf-8")
-    md_path.write_text(render_markdown(video_name, results, characters), encoding="utf-8")
+    # Un fichier JSON + un fichier Markdown PAR SCÈNE : chaque scène correspond à
+    # une génération Kling distincte, donc à un fichier de prompt distinct.
+    width = max(2, len(str(len(results))))
+    scene_filenames: dict[int, str] = {}
+    for scene, data in results:
+        fname = f"scene_{scene.index:0{width}d}"
+        scene_filenames[scene.index] = fname
+        (output_dir / f"{fname}.json").write_text(json.dumps(
+            {"scene": scene.index, "start": scene.start, "end": scene.end, **data},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        (output_dir / f"{fname}.md").write_text(
+            render_scene_markdown(scene, data), encoding="utf-8")
+
+    characters_path = output_dir / "characters.json"
+    if characters:
+        characters_path.write_text(json.dumps(
+            {"characters": characters}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    index_path = output_dir / "index.md"
+    index_path.write_text(
+        render_index_markdown(video_name, results, characters, scene_filenames), encoding="utf-8")
 
     print()
     print(f"✅ Terminé : {len(results)} scène(s) analysée(s).")
     if characters:
-        print(f"   Personnages cohérents entre scènes : {len(characters)}")
-    print(f"   Rapport lisible : {md_path}")
-    print(f"   Données JSON    : {json_path}")
+        print(f"   Personnages cohérents entre scènes : {len(characters)} → {characters_path}")
+    print(f"   {len(results)} fichier(s) scene_XX.json / scene_XX.md dans : {output_dir}")
+    print(f"   Sommaire : {index_path}")
 
 
 if __name__ == "__main__":

@@ -26,11 +26,20 @@ et en mode **Multi-Shot** — afin de recréer une scène équivalente, avec des
      décor, même lumière — seuls le cadrage et l'action changent) ;
    - 3–4 **variations** : mêmes acteurs et mêmes mouvements, mais nouvel
      environnement, autre saison, autre heure ou autre style visuel.
-6. **Produit un rapport** : `kling_prompts.md` (lisible, prompts prêts à coller
-   dans Kling) et `kling_prompts.json` (données structurées).
+6. **Produit un fichier par scène** — chaque scène = une génération Kling distincte :
+   ```
+   kling_report/
+   ├── index.md            ← sommaire avec liens vers chaque scène
+   ├── characters.json     ← fiche personnages (si plusieurs scènes)
+   ├── scene_01.json        scene_01.md
+   ├── scene_02.json        scene_02.md
+   └── ...
+   ```
 
-Une vidéo de 2 minutes donne ainsi ~8 scènes de 15 s, chacune avec son propre jeu de
-prompts Kling — et les mêmes personnages décrits à l'identique dans chacune.
+Une vidéo de 2 minutes donne ainsi ~8 scènes de 15 s → 8 paires de fichiers
+`scene_XX.json` / `scene_XX.md`, chacune prête à être donnée telle quelle à Kling
+ou à un pipeline d'automatisation — et les mêmes personnages décrits à l'identique
+dans chacune.
 
 ## Installation
 
@@ -70,14 +79,14 @@ python video_scene_agent.py ma_video.mp4 \
 > Pour une vidéo YouTube, téléchargez-la d'abord avec `yt-dlp` puis passez le
 > fichier local à l'agent : `yt-dlp -f mp4 <url> -o clip.mp4`.
 
-## Exemple de sortie (extrait)
+## Exemple de sortie (extrait de `scene_02.md`)
 
 ````markdown
-## Scène 2 — 15s → 30s
+# Scène 2 — 15s → 30s
 
 **Résumé :** Une femme en manteau rouge traverse une place pavée sous la pluie…
 
-### 🎬 Prompt Kling (single shot)
+## 🎬 Prompt Kling (single shot)
 ```text
 A woman in a long red wool coat walks briskly across a rain-soaked cobblestone
 plaza, clutching a black umbrella that tilts against the wind; she glances over
@@ -86,9 +95,12 @@ the wet stones, light drizzle, dusk atmosphere. Medium tracking shot, camera
 dollies alongside her at eye level. Cinematic, 35mm film, shallow depth of field.
 ```
 
-### 🌍 Variations
+## 🌍 Variations
 **Version hiver** — même chorégraphie, place enneigée au crépuscule…
 ````
+
+Le fichier `scene_02.json` correspondant contient les mêmes données en format
+structuré (utile pour scripter l'envoi à Kling ou à une autre automatisation).
 
 ## Cohérence des personnages entre scènes
 
